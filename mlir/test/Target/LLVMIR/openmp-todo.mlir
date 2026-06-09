@@ -193,7 +193,7 @@ atomic {
 llvm.func @target_in_reduction_byref(%x : !llvm.ptr) {
   // expected-error@below {{not yet implemented: Unhandled clause in_reduction with byref modifier in omp.target operation}}
   // expected-error@below {{LLVM Translation failed for operation: omp.target}}
-  omp.target in_reduction(byref @add_f32 %x -> %prv : !llvm.ptr) {
+  omp.target in_reduction(byref @add_f32 %x : !llvm.ptr) {
     omp.terminator
   }
   llvm.return
@@ -219,7 +219,7 @@ cleanup {
 llvm.func @target_in_reduction_cleanup(%x : !llvm.ptr) {
   // expected-error@below {{not yet implemented: Unhandled clause in_reduction with cleanup region in omp.target operation}}
   // expected-error@below {{LLVM Translation failed for operation: omp.target}}
-  omp.target in_reduction(@add_cleanup_f32 %x -> %prv : !llvm.ptr) {
+  omp.target in_reduction(@add_cleanup_f32 %x : !llvm.ptr) {
     omp.terminator
   }
   llvm.return
@@ -248,7 +248,7 @@ omp.declare_reduction @add_two_arg_init_i32 : !llvm.ptr alloc {
 llvm.func @target_in_reduction_two_arg_init(%x : !llvm.ptr) {
   // expected-error@below {{not yet implemented: Unhandled clause in_reduction with two-argument initializer in omp.target operation}}
   // expected-error@below {{LLVM Translation failed for operation: omp.target}}
-  omp.target in_reduction(@add_two_arg_init_i32 %x -> %prv : !llvm.ptr) {
+  omp.target in_reduction(@add_two_arg_init_i32 %x : !llvm.ptr) {
     omp.terminator
   }
   llvm.return
@@ -273,7 +273,7 @@ llvm.func @target_in_reduction_no_map(%x : !llvm.ptr) {
   // boundaries; the translation must reject this up front.
   // expected-error@below {{not yet implemented: in_reduction variable on omp.target must also be captured by a matching map_entries entry}}
   // expected-error@below {{LLVM Translation failed for operation: omp.target}}
-  omp.target in_reduction(@add_no_map_f32 %x -> %prv : !llvm.ptr) {
+  omp.target in_reduction(@add_no_map_f32 %x : !llvm.ptr) {
     omp.terminator
   }
   llvm.return

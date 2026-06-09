@@ -435,19 +435,26 @@ static void bindEntryBlockArgs(lower::AbstractConverter &converter,
 
   // Do not bind host_eval variables because they cannot be used inside of the
   // corresponding region, except for very specific cases handled separately.
-  // Bind map before in_reduction so that for target in_reduction list items
-  // (which are also implicitly mapped), the in_reduction binding wins and
-  // in-body references use the reduction-private block argument, not the
-  // mapped/original address.
+  //
+  // For `omp.task` / `omp.taskloop`, `in_reduction` list items have their own
+  // entry block argument and are bound here like other private-like variables.
+  //
+  // `in_reduction` list items on `omp.target` are not given their own entry
+  // block argument (`args.inReduction` is left empty for target), so the
+  // in_reduction bind below is a no-op there. Instead they are implicitly
+  // mapped, so in-body references resolve to the `map_entries` block argument
+  // bound here; the host side uses the `in_reduction` clause metadata to
+  // redirect that mapped value to the per-task reduction-private storage during
+  // translation.
   bindMapLike(args.hasDeviceAddr.objects, op.getHasDeviceAddrBlockArgs());
   bindMapLike(args.map.objects, op.getMapBlockArgs());
-  bindPrivateLike(args.inReduction.objects, args.inReduction.vars,
-                  op.getInReductionBlockArgs());
   bindPrivateLike(args.priv.objects, args.priv.vars, op.getPrivateBlockArgs());
   bindPrivateLike(args.reduction.objects, args.reduction.vars,
                   op.getReductionBlockArgs());
   bindPrivateLike(args.taskReduction.objects, args.taskReduction.vars,
                   op.getTaskReductionBlockArgs());
+  bindPrivateLike(args.inReduction.objects, args.inReduction.vars,
+                  op.getInReductionBlockArgs());
   bindMapLike(args.useDeviceAddr.objects, op.getUseDeviceAddrBlockArgs());
   bindMapLike(args.useDevicePtr.objects, op.getUseDevicePtrBlockArgs());
 }
@@ -3163,8 +3170,10 @@ genTargetOp(lower::AbstractConverter &converter, lower::SymMap &symTable,
   args.hasDeviceAddr.objects = hasDeviceAddrObjects;
   args.hasDeviceAddr.vars = hasDeviceAddrBaseValues;
   args.hostEvalVars = clauseOps.hostEvalVars;
-  args.inReduction.objects = inReductionObjects;
-  args.inReduction.vars = clauseOps.inReductionVars;
+  // `in_reduction` list items do not get their own entry block argument on
+  // `omp.target`; they are implicitly mapped (see the force-map above) and the
+  // target body accesses them through their `map_entries` block argument. The
+  // `in_reduction` operands remain on the op as host-side metadata.
   args.map.objects = mapObjects;
   args.map.vars = mapBaseValues;
   args.priv.objects = makeObjects(dsp.getDelayedPrivSymbols());

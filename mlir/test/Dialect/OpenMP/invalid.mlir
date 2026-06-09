@@ -3131,7 +3131,7 @@ func.func @omp_target_depend(%data_var: memref<i32>) {
 
 func.func @omp_target_in_reduction_unresolved(%ptr: !llvm.ptr) {
   // expected-error @below {{op expected symbol reference @add_f32 to point to a reduction declaration}}
-  omp.target in_reduction(@add_f32 %ptr -> %arg0 : !llvm.ptr) {
+  omp.target in_reduction(@add_f32 %ptr : !llvm.ptr) {
     omp.terminator
   }
   return
@@ -3153,7 +3153,7 @@ combiner {
 
 func.func @omp_target_in_reduction_duplicate(%ptr: !llvm.ptr) {
   // expected-error @below {{op accumulator variable used more than once}}
-  omp.target in_reduction(@add_f32 %ptr -> %arg0, @add_f32 %ptr -> %arg1 : !llvm.ptr, !llvm.ptr) {
+  omp.target in_reduction(@add_f32 %ptr, @add_f32 %ptr : !llvm.ptr, !llvm.ptr) {
     omp.terminator
   }
   return
@@ -3181,7 +3181,7 @@ atomic {
 
 func.func @omp_target_in_reduction_type_mismatch(%mem: memref<1xf32>) {
   // expected-error @below {{op expected accumulator ('memref<1xf32>') to be the same type as reduction declaration ('!llvm.ptr')}}
-  omp.target in_reduction(@add_i32 %mem -> %arg0 : memref<1xf32>) {
+  omp.target in_reduction(@add_i32 %mem : memref<1xf32>) {
     omp.terminator
   }
   return

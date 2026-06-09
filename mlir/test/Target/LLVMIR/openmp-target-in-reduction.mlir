@@ -2,12 +2,14 @@
 
 // in_reduction on omp.target: the in_reduction variable is also captured
 // into the target region as a map entry (the Flang front-end emits this
-// implicit map). Inside the outlined target body the captured pointer is
-// passed to __kmpc_task_reduction_get_th_data with a NULL descriptor;
-// the runtime walks enclosing taskgroups to locate the matching
-// task_reduction registration. The returned pointer is bound to the
-// in_reduction region block argument so subsequent loads/stores inside
-// the region use the private copy.
+// implicit map). The in_reduction clause does not define an entry block
+// argument; inside the target body the variable is accessed through its
+// map_entries block argument. The captured pointer is passed to
+// __kmpc_task_reduction_get_th_data with a NULL descriptor; the runtime
+// walks enclosing taskgroups to locate the matching task_reduction
+// registration. The returned per-task private pointer is bound to the
+// map_entries block argument so subsequent loads/stores inside the region
+// use the private copy.
 
 omp.declare_reduction @add_i32 : i32
 init {
@@ -23,11 +25,11 @@ combiner {
 
 llvm.func @target_inreduction(%x : !llvm.ptr) {
   %m = omp.map.info var_ptr(%x : !llvm.ptr, i32) map_clauses(tofrom) capture(ByRef) -> !llvm.ptr
-  omp.target in_reduction(@add_i32 %x -> %prv : !llvm.ptr) map_entries(%m -> %marg : !llvm.ptr) {
-    %v = llvm.load %prv : !llvm.ptr -> i32
+  omp.target in_reduction(@add_i32 %x : !llvm.ptr) map_entries(%m -> %marg : !llvm.ptr) {
+    %v = llvm.load %marg : !llvm.ptr -> i32
     %c1 = llvm.mlir.constant(1 : i32) : i32
     %s = llvm.add %v, %c1 : i32
-    llvm.store %s, %prv : i32, !llvm.ptr
+    llvm.store %s, %marg : i32, !llvm.ptr
     omp.terminator
   }
   llvm.return

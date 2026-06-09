@@ -8270,6 +8270,7 @@ convertOmpTarget(Operation &opInst, llvm::IRBuilderBase &builder,
   // the to-be-outlined target task body. Threading that pointer through the
   // device kernel argument list is left as follow-up work.
   SmallVector<llvm::Value *> inRedOrigPtrs;
+  SmallVector<unsigned> inRedMapArgIdx;
   if (!targetOp.getInReductionVars().empty()) {
     if (isTargetDevice || isOffloadEntry)
       return opInst.emitError(
@@ -8279,25 +8280,29 @@ convertOmpTarget(Operation &opInst, llvm::IRBuilderBase &builder,
     // shapes are rejected earlier by checkImplementationStatus, and symbol
     // resolution is guaranteed by verifyReductionVarList.
     //
-    // Each in_reduction variable must also be captured by the target via a
-    // map_entries entry referring to the same outer SSA value. OMPIRBuilder
-    // outlines the target body and only rewires uses of values that enter
-    // the kernel through the map-derived input set. The runtime call below
-    // uses that same outer SSA value as its `orig` argument, so without a
-    // matching map entry the outlined kernel would reference a value defined
-    // in the host function and fail IR verification. At this (LLVM-dialect)
-    // stage the in_reduction operand and the map var_ptr are the same value,
-    // so it cannot be a producer-level (FIR) op invariant where they differ.
-    llvm::SmallPtrSet<Value, 4> mappedVarPtrs;
-    for (Value mapV : targetOp.getMapVars())
+    // The target body has no dedicated in_reduction block argument: each
+    // in_reduction variable is accessed through its map_entries block argument,
+    // which the host redirects to the per-task reduction-private storage below.
+    // So each in_reduction variable must also be captured by the target via a
+    // map_entries entry referring to the same outer SSA value. That value is
+    // also used as the `orig` argument of the runtime lookup, so without a
+    // matching map entry the outlined kernel would reference a value defined in
+    // the host function and fail IR verification. Record, for each in_reduction
+    // variable, the position of its matching map entry so the corresponding map
+    // block argument can be redirected once we are inside the body.
+    llvm::SmallDenseMap<Value, unsigned> mapVarPtrToArgIdx;
+    for (auto [idx, mapV] : llvm::enumerate(targetOp.getMapVars()))
       if (auto mapInfo = mapV.getDefiningOp<omp::MapInfoOp>())
-        mappedVarPtrs.insert(mapInfo.getVarPtr());
+        mapVarPtrToArgIdx.try_emplace(mapInfo.getVarPtr(), idx);
     inRedOrigPtrs.reserve(targetOp.getInReductionVars().size());
+    inRedMapArgIdx.reserve(targetOp.getInReductionVars().size());
     for (Value v : targetOp.getInReductionVars()) {
-      if (!mappedVarPtrs.contains(v))
+      auto it = mapVarPtrToArgIdx.find(v);
+      if (it == mapVarPtrToArgIdx.end())
         return targetOp.emitError()
                << "not yet implemented: in_reduction variable on omp.target "
                   "must also be captured by a matching map_entries entry";
+      inRedMapArgIdx.push_back(it->second);
       inRedOrigPtrs.push_back(moduleTranslation.lookupValue(v));
     }
   }
@@ -8377,8 +8382,15 @@ convertOmpTarget(Operation &opInst, llvm::IRBuilderBase &builder,
         attr.isStringAttribute())
       llvmOutlinedFn->addFnAttr(attr);
 
-    for (auto [arg, mapOp] : llvm::zip_equal(mapBlockArgs, mapVars)) {
-      auto mapInfoOp = cast<omp::MapInfoOp>(mapOp.getDefiningOp());
+    for (auto [idx, arg] : llvm::enumerate(mapBlockArgs)) {
+      // in_reduction list items on omp.target are accessed through their
+      // map_entries block argument, which is redirected below to the per-task
+      // reduction-private storage returned by the runtime. Skip the default
+      // host-value mapping for those block arguments so the write-once
+      // mapValue mapping is free to be set to the private pointer.
+      if (llvm::is_contained(inRedMapArgIdx, idx))
+        continue;
+      auto mapInfoOp = cast<omp::MapInfoOp>(mapVars[idx].getDefiningOp());
       llvm::Value *mapOpValue =
           moduleTranslation.lookupValue(mapInfoOp.getVarPtr());
       moduleTranslation.mapValue(arg, mapOpValue);
@@ -8414,14 +8426,16 @@ convertOmpTarget(Operation &opInst, llvm::IRBuilderBase &builder,
             targetOp.getPrivateNeedsBarrier(), &mappedPrivateVars)))
       return llvm::make_error<PreviouslyReportedError>();
 
-    // Map in_reduction block arguments to the per-task private storage
-    // returned by __kmpc_task_reduction_get_th_data. The lookup must run
-    // inside the target task body so the gtid corresponds to the executing
-    // thread. The descriptor argument is NULL: the runtime walks enclosing
-    // taskgroups to locate the matching task_reduction registration for
-    // `origPtr`. Mirrors the in_reduction handling on omp.taskloop.context.
-    ArrayRef<BlockArgument> inRedBlockArgs = argIface.getInReductionBlockArgs();
-    if (!inRedBlockArgs.empty()) {
+    // The target body accesses each in_reduction variable through its
+    // map_entries block argument. Redirect that block argument to the per-task
+    // private storage returned by __kmpc_task_reduction_get_th_data so the body
+    // accumulates into the reduction-private copy rather than the mapped
+    // original. The lookup must run inside the target task body so the gtid
+    // corresponds to the executing thread. The descriptor argument is NULL: the
+    // runtime walks enclosing taskgroups to locate the matching task_reduction
+    // registration for `origPtr`. Mirrors the in_reduction handling on
+    // omp.taskloop.context.
+    if (!inRedOrigPtrs.empty()) {
       llvm::OpenMPIRBuilder &ompB = *ompBuilder;
       llvm::Module *m = moduleTranslation.getLLVMModule();
       llvm::LLVMContext &llvmCtx = m->getContext();
@@ -8436,11 +8450,11 @@ convertOmpTarget(Operation &opInst, llvm::IRBuilderBase &builder,
           *m, llvm::omp::OMPRTL___kmpc_task_reduction_get_th_data);
       llvm::Type *ptrTy = llvm::PointerType::getUnqual(llvmCtx);
       llvm::Value *nullDesc = llvm::ConstantPointerNull::get(ptrTy);
-      for (auto [blockArg, origPtr] :
-           llvm::zip_equal(inRedBlockArgs, inRedOrigPtrs)) {
+      for (auto [mapArgIdx, origPtr] :
+           llvm::zip_equal(inRedMapArgIdx, inRedOrigPtrs)) {
         llvm::Value *priv = builder.CreateCall(
             getThData, {bodyGtid, nullDesc, origPtr}, "omp.inred.priv");
-        moduleTranslation.mapValue(blockArg, priv);
+        moduleTranslation.mapValue(mapBlockArgs[mapArgIdx], priv);
       }
     }
 
