@@ -174,3 +174,6 @@ add_clang_library(clangCodeGen
   clangLex
   clangSerialization
   )
+
+  set_source_files_properties(CGStmtOpenMP.cpp PROPERTIES
+    COMPILE_DEFINITIONS "TAREADOR")

@@ -1261,7 +1261,7 @@ bool CodeGenFunction::EmitOMPFirstprivateClause(const OMPExecutableDirective &D,
   }
   return FirstprivateIsLastprivate && !EmittedAsFirstprivate.empty();
 }
-
+// TAREADOR: PRIVATE 
 void CodeGenFunction::EmitOMPPrivateClause(
     const OMPExecutableDirective &D,
     CodeGenFunction::OMPPrivateScope &PrivateScope) {
@@ -2111,6 +2111,7 @@ void CodeGenFunction::EmitOMPParallelDirective(const OMPParallelDirective &S) {
       return CodeGenIP;
     };
 
+    // TAREADOR: capture code
     const CapturedStmt *CS = S.getCapturedStmt(OMPD_parallel);
     const Stmt *ParallelRegionBodyStmt = CS->getCapturedStmt();
 
@@ -5816,9 +5817,47 @@ void CodeGenFunction::EmitOMPTaskDirective(const OMPTaskDirective &S) {
   OMPTaskDataTy Data;
   // Check if we should emit tied or untied task.
   Data.Tied = !S.getSingleClause<OMPUntiedClause>();
+#ifndef TAREADOR
+  printf("No he llegado al codigo de clang tareador\n");
   auto &&BodyGen = [CS](CodeGenFunction &CGF, PrePostActionTy &) {
     CGF.EmitStmt(CS->getCapturedStmt());
   };
+#else
+  // TAREADOR: build task label from source location
+  std::string TaskLabel;
+  {
+    llvm::raw_string_ostream OS(TaskLabel);
+    S.getBeginLoc().print(OS, getContext().getSourceManager());
+  }
+  printf(" he entrado al codigo de clang tareador\n");
+
+  auto &&TareadorStartGen = [CS, TaskLabel](CodeGenFunction &CGF, PrePostActionTy &) {
+    llvm::FunctionCallee StartFunc = CGF.CGM.CreateRuntimeFunction(
+        llvm::FunctionType::get(CGF.CGM.VoidTy, {CGF.CGM.Int8PtrTy}, false),
+        "tareador_start_task");
+  printf(" he intentado agregar tareador start\n");
+
+    llvm::Constant *LabelPtr =
+        CGF.CGM.GetAddrOfConstantCString(TaskLabel, ".task_label").getPointer();
+    CGF.EmitRuntimeCall(StartFunc, {LabelPtr});
+  };
+  
+  auto &&BodyGen = [CS](CodeGenFunction &CGF, PrePostActionTy &) {
+    CGF.EmitStmt(CS->getCapturedStmt());
+  };
+
+  auto &&TareadorEndGen = [CS, TaskLabel](CodeGenFunction &CGF, PrePostActionTy &) {
+    llvm::FunctionCallee EndFunc = CGF.CGM.CreateRuntimeFunction(
+        llvm::FunctionType::get(CGF.CGM.VoidTy, {CGF.CGM.Int8PtrTy}, false),
+        "tareador_end_task");
+  printf(" he intentado agregar tareador end\n");
+
+    llvm::Constant *LabelPtr =
+        CGF.CGM.GetAddrOfConstantCString(TaskLabel, ".task_label").getPointer();
+    CGF.EmitRuntimeCall(EndFunc, {LabelPtr});
+  };
+#endif
+
   auto &&TaskGen = [&S, SharedsTy, CapturedStruct,
                     IfCond](CodeGenFunction &CGF, llvm::Function *OutlinedFn,
                             const OMPTaskDataTy &Data) {
@@ -5828,7 +5867,10 @@ void CodeGenFunction::EmitOMPTaskDirective(const OMPTaskDirective &S) {
   };
   auto LPCRegion =
       CGOpenMPRuntime::LastprivateConditionalRAII::disable(*this, S);
+  // EmitOMPTaskBasedDirective(S, OMPD_task, BodyGen, TaskGen, Data);
+  EmitOMPTaskBasedDirective(S, OMPD_task, TareadorStartGen, TaskGen, Data);
   EmitOMPTaskBasedDirective(S, OMPD_task, BodyGen, TaskGen, Data);
+  EmitOMPTaskBasedDirective(S, OMPD_task, TareadorEndGen, TaskGen, Data);
 }
 
 void CodeGenFunction::EmitOMPTaskyieldDirective(
